@@ -20,6 +20,8 @@
 #include "gemmstone/problem.hpp"
 #include "internal/utils.hpp"
 
+#include "gpu/intel/utils.hpp"
+
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -229,6 +231,7 @@ Type extPrecision(const kcatalog::string &precision, bool isC)
 
 double evaluateECore(const kcatalog::Entry &e, const DerivedEvaluateParams &dp, EvaluateAuxOutput &aux, bool noKR = false)
 {
+    using dnnl::impl::gpu::intel::gpu_utils::dev_getenv;
 #define PARAM(p) e.model.params[kcatalog::ParamE_##p]
 
     auto threads = dp.threadCount;
@@ -351,6 +354,15 @@ double evaluateECore(const kcatalog::Entry &e, const DerivedEvaluateParams &dp, 
     }
 
     double time = ctime + std::max(mtime, etime);
+
+    if (aux.kParallelVariable || aux.kParallel) {
+        auto minOps = dev_getenv("MIN_OPS", 500000);
+        auto minKPerMNB = dev_getenv("MIN_K_PER_MNB", 512);
+        double ops = 2.0 * double(m) * double(n) * double(k) * double(batch);
+        double kPerMNB = double(k) / (double(m) * double(n) * double(batch));
+        // Skip k-parallel kernels for small, non-K-heavy shapes.
+        if (ops < minOps && kPerMNB < minKPerMNB) return std::numeric_limits<double>::infinity();
+    }
 
     return time;
 #undef PARAM

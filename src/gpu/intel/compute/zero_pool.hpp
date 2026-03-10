@@ -23,6 +23,7 @@
 #include "common/c_types_map.hpp"
 #include "gpu/intel/engine.hpp"
 #include "gpu/intel/stream.hpp"
+#include "gpu/intel/utils.hpp"
 
 namespace dnnl {
 namespace impl {
@@ -71,6 +72,11 @@ private:
 status_t lookup_zero_pool(intel::engine_t *engine, intel::stream_t *stream,
         size_t chunk_size, zero_pool_t **out_pool);
 void release_zero_pool(zero_pool_t *pool);
+
+inline bool use_zero_pool() {
+    static const bool value = gpu_utils::dev_getenv("ZP", false);
+    return value;
+}
 
 } // namespace intel
 } // namespace gpu

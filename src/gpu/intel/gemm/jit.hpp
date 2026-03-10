@@ -25,6 +25,7 @@
 #include "common/utils.hpp"
 #include "gpu/intel/compute/device_info.hpp"
 #include "gpu/intel/compute/kernel.hpp"
+#include "gpu/intel/compute/kernel_ctx.hpp"
 #include "gpu/intel/compute/zero_pool.hpp"
 #include "gpu/intel/gemm/jit/gen_kernel.hpp"
 #include "gpu/intel/gemm/jit/pd.hpp"
@@ -510,6 +511,15 @@ struct gen_t : public primitive_t {
                 scratchpad.book(memory_tracking::names::key_gemm_accumulator,
                         temp_c_elems, temp_c_sz, 64, 65536);
             }
+            if (info->fusedBeta() || info->fusedPostOps()) {
+                auto scratchpad = scratchpad_registry().registrar();
+                int zg_cl = 0;
+                if (info->fusedBeta()) zg_cl++;
+                if (info->fusedPostOps()) zg_cl++;
+                size_t zero_pool_bytes = max_k_sliced_groups() * 64 * zg_cl;
+                scratchpad.book(memory_tracking::names::key_gemm_zero_pool,
+                        zero_pool_bytes, 1, 64, 65536);
+            }
         }
 
         const jit::gen_nocopy_desc_t *kernel_desc() const {
@@ -564,14 +574,27 @@ struct gen_t : public primitive_t {
 
             zero_pool_bytes_ = pd()->max_k_sliced_groups() * 64 * zg_cl;
 
-            auto zg_max = pd()->dev_info_->hw_threads(false);
-            zero_pool_chunk_size_ = zg_max * 2 * 2 * 64;
+            if (use_zero_pool()) {
+                auto zg_max = pd()->dev_info_->hw_threads(false);
+                zero_pool_chunk_size_ = zg_max * 2 * 2 * 64;
 
-            auto *intel_engine = utils::downcast<intel::engine_t *>(engine);
-            CHECK(lookup_zero_pool(
-                    intel_engine, nullptr, zero_pool_chunk_size_, &zero_pool_));
+                auto *intel_engine = utils::downcast<intel::engine_t *>(engine);
+                CHECK(lookup_zero_pool(intel_engine, nullptr,
+                        zero_pool_chunk_size_, &zero_pool_));
 
-            nocopy_kernel_.save_output_events();
+                nocopy_kernel_.save_output_events();
+            } else {
+                compute::kernel_ctx_t kernel_ctx;
+                // Match the main kernel's options (GRF mode, thread
+                // arbitration) to avoid hardware state reconfiguration between
+                // back-to-back kernel dispatches.
+                if (info->grfCount > 128) {
+                    kernel_ctx.add_option("-cl-intel-256-GRF-per-thread");
+                }
+                kernel_ctx.add_option("-cl-no-subgroup-ifp");
+                CHECK(create_kernel(engine, &zero_fill_kernel_,
+                        "gemm_zero_fill", kernel_ctx));
+            }
         }
 
         return status::success;
@@ -589,6 +612,7 @@ private:
             const memory_storage_t *c_scales, const memory_storage_t *ag,
             const memory_storage_t *bg, const memory_storage_t &co,
             int16_t co_host_scalar, const memory_storage_t *c_temp,
+            const memory_storage_t *zero_buf_scratchpad,
             const memory_storage_t *sround_seed, int po_count,
             const memory_storage_t **po_src, int64_t offset_a, int64_t offset_b,
             int64_t offset_c, int64_t offset_aq, int64_t offset_bq,
@@ -607,6 +631,7 @@ private:
     }
 
     compute::kernel_t nocopy_kernel_;
+    compute::kernel_t zero_fill_kernel_;
     compute::scalar_type_t scalar_type_;
     zero_pool_t *zero_pool_ = nullptr;
     size_t zero_pool_bytes_ = 0;
