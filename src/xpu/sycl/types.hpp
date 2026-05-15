@@ -118,10 +118,92 @@ using in_memory_arg_t = memory_arg_t<::sycl::access::mode::read>;
 using out_memory_arg_t = memory_arg_t<::sycl::access::mode::write>;
 using inout_memory_arg_t = memory_arg_t<::sycl::access::mode::read_write>;
 
-// TODO: this class mimics memory_desc_t and makes sure it can be passed
-// to SYCL kernels as a kernel argument. SYCL puts restrictions on kernel
-// arguments, e.g. those cannot contain unions.
+// This class keeps only essentials from original memory_desc_t as this class
+// is used inside conf classes which are passed to kernel as arguments directly.
+// There's a limit on arguments size and the less is used, the more can be put
+// into those conf classes.
 struct md_t {
+    // There is a limitation on total size of kernel arguments hence using
+    // reduced number of supported dimensions and int32_t for dimensions.
+    static constexpr int max_dims = 6;
+
+    using dim32_t = int32_t;
+    using dims32_t = dim32_t[max_dims];
+
+    data_type_t data_type() const { return data_type_; }
+    dim32_t ndims() const { return ndims_; }
+
+    const dims32_t &dims() const { return dims_; }
+    const dims32_t &strides() const { return strides_; }
+
+    md_t() = default;
+    md_t(const memory_desc_t *md) {
+        memory_desc_wrapper mdw(md);
+
+        assert(mdw.format_kind() == format_kind::blocked);
+        assert(mdw.ndims() <= max_dims);
+
+        const auto &blk = mdw.blocking_desc();
+
+        data_type_ = mdw.data_type();
+#define CHECK_AND_ASSIGN(lhs, rhs) \
+    assert((rhs) <= INT32_MAX); \
+    (lhs) = static_cast<dim32_t>(rhs)
+
+        CHECK_AND_ASSIGN(ndims_, mdw.ndims());
+        for (int d = 0; d < mdw.ndims(); d++) {
+            CHECK_AND_ASSIGN(dims_[d], mdw.dims()[d]);
+            CHECK_AND_ASSIGN(strides_[d], blk.strides[d]);
+        }
+#undef CHECK_AND_ASSIGN
+    }
+
+    template <typename... Args>
+    dim_t off(Args... args) const {
+        dims_t pos = {args...};
+        return off_v(pos);
+    }
+
+    dim_t off_v(const dims_t pos) const {
+        dim_t phys_offset = 0;
+        for (int d = 0; d < ndims(); ++d) {
+            const dim_t p = pos[d];
+            phys_offset += p * strides()[d];
+        }
+        return phys_offset;
+    }
+
+    dim_t off_v_masked(const dims_t pos, int mask) const {
+        dims_t pos_masked;
+        utils::copy_dims_with_mask(pos_masked, pos, ndims(), mask);
+        return off_v(pos_masked);
+    }
+
+    dim_t off_l(dim_t l_offset) const {
+        dims_t pos;
+        for (int rd = 0; rd < ndims(); ++rd) {
+            const int d = ndims() - 1 - rd;
+            const dim_t cur_dim = dims()[d];
+            if (l_offset <= INT32_MAX && cur_dim <= INT32_MAX) {
+                pos[d] = (int32_t)l_offset % (int32_t)cur_dim;
+                l_offset = (int32_t)l_offset / (int32_t)cur_dim;
+            } else {
+                pos[d] = l_offset % cur_dim;
+                l_offset /= cur_dim;
+            }
+        }
+        return off_v(pos);
+    }
+
+private:
+    data_type_t data_type_;
+    dim32_t ndims_;
+    dims32_t dims_;
+    dims32_t strides_;
+};
+
+// This class keeps block format for weights if it is ever needed.
+struct blocked_md_t {
     // There is a limitation on total size of kernel arguments hence using
     // reduced number of supported dimensions and int32_t for dimensions.
     static constexpr int max_dims = 6;
@@ -142,8 +224,8 @@ struct md_t {
     const dims32_t &inner_blks() const { return inner_blks_; }
     const dims32_t &inner_idxs() const { return inner_idxs_; }
 
-    md_t() = default;
-    md_t(const memory_desc_t *md) {
+    blocked_md_t() = default;
+    blocked_md_t(const memory_desc_t *md) {
         memory_desc_wrapper mdw(md);
 
         assert(mdw.format_kind() == format_kind::blocked);
