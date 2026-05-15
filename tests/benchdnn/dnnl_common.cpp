@@ -723,7 +723,8 @@ inline int measure_perf_aggregate(timer::timer_t &t,
     std::vector<cold_cache_t> cold_cache(num_streams);
 
     // Nvidia/AMD don't support profiling.
-    const bool use_profiling = is_gpu() && !is_nvidia_gpu() && !is_amd_gpu();
+    const bool use_profiling = is_gpu() && !is_nvidia_gpu() && !is_amd_gpu()
+            && !is_generic_gpu();
 
     // Warm-up run, this is not measured due to possibility the associated
     // kernel has not been built and skews the results.
@@ -1933,7 +1934,8 @@ stream_t::stream_t(dnnl_engine_t engine, void *interop_obj) : is_owner_(true) {
 #endif
 
     const bool use_profiling = has_bench_mode_bit(mode_bit_t::perf)
-            && is_gpu(engine) && !is_nvidia_gpu(engine) && !is_amd_gpu(engine);
+            && is_gpu(engine) && !is_nvidia_gpu(engine) && !is_amd_gpu(engine)
+            && !is_generic_gpu(engine);
     dnnl_stream_flags_t flags
             = stream_kind2stream_flags(stream_kind, use_profiling);
     DNN_SAFE_V(dnnl_stream_create(&stream_, engine, flags));
