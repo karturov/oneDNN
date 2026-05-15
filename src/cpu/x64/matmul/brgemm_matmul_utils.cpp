@@ -674,7 +674,8 @@ format_tag_t brgemm_matmul_conf_utils_t::pick_blocked_B_layout(
 
     if (bgmmc.ndims > 3) return format_tag::undef;
 
-    if (is_int8() || is_f8()) {
+    const bool prefer_vnni_block = is_f8() && bgmmc.isa == avx10_2;
+    if (is_int8() || (is_f8() && !prefer_vnni_block)) {
         switch (n_blk) {
             case 64: return bgmmc.ndims == 3 ? aCB16b64c4b : BA16a64b4a;
             case 48: return bgmmc.ndims == 3 ? aCB16b48c4b : BA16a48b4a;
@@ -690,7 +691,7 @@ format_tag_t brgemm_matmul_conf_utils_t::pick_blocked_B_layout(
             || is_f32_bf16() || is_f16_with_int_wei() || is_f32_with_int_wei();
 
     if ((prefer_amx_or_avx2_vnni_2 && is_amx_or_avx2_vnni_2) || is_bf16()
-            || is_bf16_with_int_wei()) {
+            || is_bf16_with_int_wei() || (is_f8() && prefer_vnni_block)) {
         switch (n_blk) {
             case 64: return bgmmc.ndims == 3 ? aCB16b64c2b : BA16a64b2a;
             case 48: return bgmmc.ndims == 3 ? aCB16b48c2b : BA16a48b2a;
@@ -1352,6 +1353,7 @@ status_t init_brgemm_matmul_conf(cpu_isa_t isa, brgemm_matmul_conf_t &bgmmc,
     bgmmc.dst_dt = dst_d.data_type();
     bgmmc.wei_dt = weights_d.data_type();
     bgmmc.orig_wei_dt = weights_d.data_type();
+    bgmmc.emu_wei_dt = get_mac_emu_data_type(bgmmc.wei_dt, isa, isa == avx10_2);
 
     bgmmc.with_reduce = mmd.reduce_desc.format_kind != format_kind::undef;
     bgmmc.reduce_dt
@@ -1612,7 +1614,7 @@ status_t init_brgemm_matmul_conf(cpu_isa_t isa, brgemm_matmul_conf_t &bgmmc,
 
     VCONDCHECK_BG(bgmmc.required_k_granularity > 0, VERBOSE_BLOCKING_FAIL, "");
 
-    bgmmc.wei_k_blk = get_wei_k_blk(bgmmc.wei_dt);
+    bgmmc.wei_k_blk = get_wei_k_blk(bgmmc.emu_wei_dt);
 
     VCHECK_BG(bm_conf_utils.set_or_check_B_tag(weights_md, helper),
             VERBOSE_UNSUPPORTED_TAG);
@@ -1804,7 +1806,7 @@ status_t init_brgemm_matmul_conf(cpu_isa_t isa, brgemm_matmul_conf_t &bgmmc,
             // ZMM registers are used without masking;
             // Two YMMs are used in the AVX2 case with the same granularity.
             size_t n_elements_in_wei_zmm = platform::get_cache_line_size()
-                    / (data_type_vnni_granularity(bgmmc.wei_dt)
+                    / (data_type_vnni_granularity(bgmmc.emu_wei_dt)
                             * bgmmc.tr_b_dt_sz);
             bgmmc.wei_n_blk = rnd_up(bgmmc.N_blk, n_elements_in_wei_zmm);
         } else {
@@ -1948,7 +1950,8 @@ status_t init_brgemm_matmul_conf(cpu_isa_t isa, brgemm_matmul_conf_t &bgmmc,
         //      [n = N / LDB][k = K / wei_k_blk][k = wei_k_blk / vnni][n = LDB][k = vnni]
         bgmmc.LDB2 = rnd_up(bgmmc.K, bgmmc.wei_k_blk) * bgmmc.LDB;
     }
-
+//printf("wei tag: %d, wei k blk: %d, buffer B: %d, buffer a: %d\n", bgmmc.wei_tag, bgmmc.wei_k_blk, bgmmc.use_buffer_b, bgmmc.use_buffer_a);
+//printf("M: %d, %d, K: %d, %d, N: %d, %d\n", bgmmc.M, bgmmc.M_blk, bgmmc.K, bgmmc.K_blk, bgmmc.N, bgmmc.N_blk);
     return status::success;
 }
 
@@ -1957,7 +1960,10 @@ status_t init_conf(brgemm_matmul_conf_t &conf, dim_t batch, dim_t M, dim_t K,
         data_type_t out_type, format_tag_t in_tag) {
     if (n_blk <= 0 && M <= 0) return status::invalid_arguments;
 
-    const auto vnni_granularity = data_type_vnni_granularity(out_type);
+    const auto isa = get_max_cpu_isa();
+    const auto emu_out_type
+            = get_mac_emu_data_type(out_type, isa, isa == avx10_2);
+    const auto vnni_granularity = data_type_vnni_granularity(emu_out_type);
     if (vnni_granularity <= 0) return status::invalid_arguments;
 
     // Zero initialize the `conf` to avoid access to 'garbage' in members.
@@ -1971,11 +1977,12 @@ status_t init_conf(brgemm_matmul_conf_t &conf, dim_t batch, dim_t M, dim_t K,
                     data_type::s4, data_type::u4);
 
     const bool is_copyB = N > 0;
-    conf.isa = get_max_cpu_isa(); // Just use the best ISA possible.
+    conf.isa = isa; // Just use the best ISA possible.
     conf.is_bf32 = false;
     conf.batch = batch;
     conf.src_dt = conf.wei_dt = out_type;
     conf.orig_src_dt = conf.orig_wei_dt = in_type;
+    conf.emu_wei_dt = emu_out_type;
     // Note: will need to change `tr_a_dt_sz` for copyA in cases where src_dt != dst_dt
     conf.a_dt_sz = conf.tr_a_dt_sz = types::data_type_size(conf.src_dt);
     conf.N = N;

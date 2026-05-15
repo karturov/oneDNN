@@ -1518,7 +1518,7 @@ struct brgemm_matmul_t<isa>::brg_matmul_exec_ctx_t {
                 pd->attr()->post_ops_, ctx);
         base_brg_ker_idx_
                 = pd->get_brg_kernel_idx(false, true, 0, 0, false, false);
-        vnni_factor = data_type_vnni_granularity(bgmmc.wei_dt);
+        vnni_factor = data_type_vnni_granularity(bgmmc.emu_wei_dt);
 
         reorder_zp_a_comp_ptr_ = nullptr;
         if (bgmmc_.has_zero_point_a && bgmmc_.blocked_B) {
@@ -1560,7 +1560,8 @@ struct brgemm_matmul_t<isa>::brg_matmul_exec_ctx_t {
         K_chunks_ = bgmmc.K_chunks;
         K_chunk_tail_ = bgmmc.num_K_blocks % get_K_chunk_size();
         K_chunk_tail_elements_ = K_ % bgmmc.K_chunk_elems;
-
+//printf("trival: %d, %d, %d\n", is_A_batch_layout_trivial_, is_B_batch_layout_trivial_, is_C_batch_layout_trivial_);
+//printf("K: %d, %d, %d, %d\n", K_, K_chunks_, K_chunk_tail_, K_chunk_tail_elements_);
         const bool avoid_overlap_of_tail_and_non_tail_kernels
                 = bgmmc.nthr > 1 && bgmmc.with_sum;
 
@@ -1714,7 +1715,7 @@ struct brgemm_matmul_t<isa>::brg_matmul_exec_ctx_t {
         int b_per_thread = rnd_up(bgmmc.batch, bgmmc.nthr_b);
         parallel_work_amount_gemm_
                 = b_per_thread * m_chunks_per_thread * n_chunks_per_thread;
-
+//printf("per thread: %d, %d, %d\n", m_chunks_per_thread, n_chunks_per_thread, b_per_thread);
         // parallelization
         parallel_work_amount_ = bgmmc.batch * M_chunks_ * N_chunks_;
 
@@ -1728,7 +1729,7 @@ struct brgemm_matmul_t<isa>::brg_matmul_exec_ctx_t {
 
         nthr_k_ = bgmmc.nthr_k > 0 && bgmmc.nthr_k <= nthr_ ? bgmmc.nthr_k : 1;
         nthr_bmn_ = nthr_ / nthr_k_;
-
+//printf("nthr: %d, %d, %d\n", nthr_, nthr_k_, nthr_bmn_);
         // If parallel_work_amount_ == 1 and parallel reduction is not used, we
         // limit num threads to 1 as parallel(1, ...) does not create parallel
         // section at all. We do not limit number of threads for case
@@ -1836,6 +1837,7 @@ struct brgemm_matmul_t<isa>::brg_matmul_exec_ctx_t {
     const char *get_data_B_kn_ptr(
             const char *batch_ptr, dim_t k, dim_t n) const {
         const char *b_ptr = batch_ptr + get_data_B_kn_off(k, n);
+//printf("B kn off: %d\n", get_data_B_kn_off(k, n));
         if (bgmmc_.packed_sparse_weights) {
             const dim_t blk_num
                     = (b_ptr - data_B_ptr_) / B_packed_sparse_block_size_;
@@ -1866,6 +1868,7 @@ struct brgemm_matmul_t<isa>::brg_matmul_exec_ctx_t {
             b_off = wei_d_.off_l(b * bgmmc_.K * bgmmc_.N) * bgmmc_.b_dt_sz;
         }
         if (bgmmc_.is_int4_weights) b_off = b_off / 2;
+//printf("b off: %d\n", b_off);
         return b_off;
     }
 
