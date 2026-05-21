@@ -431,7 +431,7 @@ status_t grouped_micro_gemm_t::pd_t::init(impl::engine_t *engine) {
             VERBOSE_UNSUPPORTED_SCALES_CFG);
 
     {
-        // Only support a single binary post-op with a scalar operand for now, which
+        // Only support a single binary post-op with a [E, 1] operand for now, which
         // is used to support nvfp4 global scale. Expand once we support more general
         // post-ops.
         const post_ops_t &po = attr()->post_ops_;
@@ -440,7 +440,8 @@ status_t grouped_micro_gemm_t::pd_t::init(impl::engine_t *engine) {
                             && po.entry_[0].binary.alg == alg_kind::binary_mul,
                     VERBOSE_UNSUPPORTED_POSTOP);
             auto po_mdw = memory_desc_wrapper(po.entry_[0].binary.src1_desc);
-            VDISPATCH_MATMUL(po_mdw.nelems() == 1 && po_mdw.data_type() == f32
+            VDISPATCH_MATMUL(po_mdw.nelems() == ngroups_
+                            && po_mdw.data_type() == f32
                             && !po_mdw.is_host_scalar_desc(),
                     VERBOSE_UNSUPPORTED_POSTOP);
         }

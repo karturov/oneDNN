@@ -400,7 +400,7 @@ grouped_micro_gemm(const global SRC_DATA_T *src, long ldsrc,
 
 #if WITH_NVFP4_GLOBAL_SCALE
     {
-        float gs = *nvfp4_global_scale;
+        float gs = nvfp4_global_scale[batch];
 #define binary_scale(v) ((v) * gs)
         tile_elementwise(c_tile, binary_scale);
 #undef binary_scale
