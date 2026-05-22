@@ -9,7 +9,7 @@
 --reset
 
 ########################################
-# grouped_mm: BF16/FP16               #
+# grouped_mm: BF16/FP16                #
 ########################################
 
 # mat2 row-major
@@ -70,14 +70,14 @@
 # scaled_grouped_mm: NvFP4             #
 # scale_a: f8_e4m3 block (M, K/16)     #
 # scale_b: f8_e4m3 block (E, K/16, N)  #
-# + global f32 scale via binary mul    #
+# + per-group global f32 scale         #
 ########################################
 
 --reset
 --dt=f4_e2m1:f4_e2m1:bf16
 --wtag=acb
 --attr-scales=src:3:f8_e4m3:1x16+wei:7:f8_e4m3:16x1
---attr-post-ops=mul:f32:0
+--attr-post-ops=mul:f32:per_g
 --attr-fpmath=f16:true
 --batch=shapes_grouped_moe
 
