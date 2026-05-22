@@ -499,7 +499,8 @@ The following are supported:
   Common patterns include `eltwise_swish` for SiLU activation,
   `binary_mul` with a `[total_tokens, N]` grouped or dense tensor,
   `binary_mul` with a `[total_tokens, 1]` dense tensor,
-  and `[1, 1]` that could be used to apply a global scale for NVFP4.
+  and `[num_groups, 1]` for a per-group global scale (e.g. NVFP4).
+  Scalar `[1, 1]` binary post-ops are not supported for grouped matmul.
   For grouped binary tensors, the per-group offsets must match the grouped dst
   partition.
 - Bias supports per-expert shape.
