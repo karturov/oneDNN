@@ -150,6 +150,7 @@ policy_t attr_t::str2policy(const std::string &str) {
     CASE(PER_DIM_2);
     CASE(PER_DIM_3);
     CASE(PER_TENSOR);
+    CASE(PER_G);
 #undef CASE
     assert(!"unknown attr_t::policy_t policy");
     return POLICY_TOTAL;
@@ -168,6 +169,7 @@ const char *attr_t::policy2str(policy_t policy) {
     if (policy == PER_DIM_2) return "per_dim_2";
     if (policy == PER_DIM_3) return "per_dim_3";
     if (policy == PER_TENSOR) return "per_tensor";
+    if (policy == PER_G) return "per_g";
     assert(!"unknown attr_t::policy_t policy");
     return "unknown attr_t::policy_t policy";
 }
@@ -201,6 +203,9 @@ static int get_default_mask(policy_t policy, int ndims) {
         case attr_t::policy_t::COMMON: return 0;
         // Note: use mask=0 for compatibility with reference compute paths.
         case attr_t::policy_t::HOST_SCALAR: return 0;
+        // Per-group: mask=0 is a placeholder for grouped matmul and descriptor,
+        // since grouped descriptor doesn't explicitly include num_groups as dim
+        case attr_t::policy_t::PER_G: return 0;
         default: SAFE(FAIL, CRIT); return INT_MIN;
     }
 }
@@ -1356,8 +1361,20 @@ int attr_args_t::prepare_post_ops_mds(const attr_t &attr, int ndims,
 
             // deduce binary, prelu dims based on input policy
             dnnl_dims_t rhs_tensor_dims = {};
-            for (auto d = 0; d < ndims; ++d)
-                rhs_tensor_dims[d] = (!(mask & (1 << d))) ? 1 : dims[d];
+#if DNNL_EXPERIMENTAL_GROUPED_MEMORY
+            if (e.binary.policy == attr_t::policy_t::PER_G) {
+                assert(grouped_count > 0);
+                // Per-group: shape [group_count, 1, ...] — one value per
+                // expert, broadcast across rows and columns.
+                for (auto d = 0; d < ndims; ++d)
+                    rhs_tensor_dims[d]
+                            = (d == grouped_var_dim_idx) ? grouped_count : 1;
+            } else
+#endif
+            {
+                for (auto d = 0; d < ndims; ++d)
+                    rhs_tensor_dims[d] = (!(mask & (1 << d))) ? 1 : dims[d];
+            }
 
             auto rhs_tensor_desc = dnn_mem_t::init_md(ndims, rhs_tensor_dims,
                     po_rhs_tensor_entry.dt, po_rhs_tensor_entry.tag,

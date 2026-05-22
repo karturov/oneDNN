@@ -76,6 +76,7 @@ struct attr_t {
         HOST_SCALAR, // same as COMMON, but uses host-side scalar memory
         MX, // uses {1, ..., 32} groups and dynamic_mx formula
         DYNAMIC_FP, // uses {1, ..., 16} groups and dynamic_fp formula
+        PER_G, // per-group (expert) for grouped matmul binary post-ops
         POLICY_TOTAL // guard
     };
 
