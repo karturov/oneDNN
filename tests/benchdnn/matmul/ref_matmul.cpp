@@ -75,6 +75,8 @@ struct chunk_params_t {
 
     // Data types
     dnnl_data_type_t bia_dt, dst_dt;
+
+    int64_t group_id = 0;
 };
 
 // Precompute parameters for compute_ref_matmul_chunk
@@ -247,8 +249,21 @@ static void compute_ref_matmul_chunk(const chunk_params_t &p, int64_t M,
             dst += p.bia_m->get_f32_elem(bia_idx);
         }
 
-        const auto v_po_vals
-                = prepare_po_vals(*p.dst_m, args, p.v_po_masks, dst_off);
+        auto v_po_vals = prepare_po_vals(*p.dst_m, args, p.v_po_masks, dst_off);
+        // WARNING: this is a w/a to fix PER_G binary post-ops, since
+        // prepare_po_vals cannot address the group dimension in grouped desc
+        // as there is no meaningful mask for it
+        for (size_t d = 0; d < v_po_vals.size(); d++) {
+            const int po_idx = p.v_po_masks[d].first
+                            / DNNL_ARG_ATTR_MULTIPLE_POST_OP_BASE
+                    - 1;
+            if (attr.post_ops.entry[po_idx].is_binary_kind()
+                    && attr.post_ops.entry[po_idx].binary.policy
+                            == attr_t::policy_t::PER_G) {
+                v_po_vals[d] = args.find(p.v_po_masks[d].first)
+                                       .get_f32_elem(p.group_id);
+            }
+        }
         maybe_dropout(attr, dst, dst_off, *p.dropout_mask);
         const auto sum_val = p.dst_m->get_f32_elem(dst_off);
         maybe_post_ops(attr, dst, sum_val, v_po_vals);
@@ -378,7 +393,10 @@ void compute_ref_grouped_matmul(const prb_t *prb, const args_t &args) {
             bia_n_stride = 1;
         }
 
-        compute_ref_matmul_chunk(params, M_g, prb->n, prb->k, mc, nc,
+        auto params_g = params;
+        params_g.group_id = g;
+
+        compute_ref_matmul_chunk(params_g, M_g, prb->n, prb->k, mc, nc,
                 src_row_base, wei_base, wei_k_stride, wei_n_stride,
                 dst_row_base, bia_base, bia_m_stride, bia_n_stride, prb->attr,
                 args);
