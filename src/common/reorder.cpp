@@ -90,6 +90,28 @@ status_t reorder_primitive_desc_create(std::shared_ptr<primitive_desc_t> &pd,
     VCHECK_REORDER(s_mdw.consistent_with(d_mdw), VERBOSE_INCONSISTENT_MDS,
             "src", "dst");
 
+    using namespace data_type;
+    if (src_md->format_kind == format_kind::blocked
+            && utils::one_of(src_md->data_type, s4, u4, f4_e2m1)) {
+        const auto &src_strides = src_md->format_desc.blocking.strides;
+
+        for (int d = 0; d < s_mdw.ndims(); d++) {
+            VCHECK_REORDER(
+                    IMPLICATION(src_strides[d] > 1, src_strides[d] % 2 == 0),
+                    VERBOSE_BAD_DIM, "src", d);
+        }
+    }
+    if (dst_md->format_kind == format_kind::blocked
+            && utils::one_of(dst_md->data_type, s4, u4, f4_e2m1)) {
+        const auto &dst_strides = dst_md->format_desc.blocking.strides;
+
+        for (int d = 0; d < d_mdw.ndims(); d++) {
+            VCHECK_REORDER(
+                    IMPLICATION(dst_strides[d] > 1, dst_strides[d] % 2 == 0),
+                    VERBOSE_BAD_DIM, "dst", d);
+        }
+    }
+
     if (attr == nullptr) attr = &default_attr();
 
     // Zero points are only allowed for integral data types
@@ -113,8 +135,7 @@ status_t reorder_primitive_desc_create(std::shared_ptr<primitive_desc_t> &pd,
         const auto &sc_src = sc.get(DNNL_ARG_SRC);
         const int mask_src = sc.get_mask(DNNL_ARG_SRC);
 
-        VCHECK_REORDER(IMPLICATION(utils::one_of(src_md->data_type,
-                                           data_type::s4, data_type::u4),
+        VCHECK_REORDER(IMPLICATION(utils::one_of(src_md->data_type, s4, u4),
                                mask_src > 0),
                 VERBOSE_INVALID_DATATYPE, "mask for int4 source");
 
