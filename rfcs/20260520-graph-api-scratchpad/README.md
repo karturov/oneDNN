@@ -260,23 +260,30 @@ cp.execute(stream, inputs, outputs, spad);
 sycl_interop::execute(cp, stream, inputs, outputs, spad, deps);
 ```
 
+oneDNN should be able to calculate or estimate the scratchpad size at partition
+compilation stage and return the size to users via the new
+`get_scratchpad_size()` interface. For internal implementations, any cases that
+scratchpad size cannot be got at compilation stage, an error should be reported
+and escalated.
+
 **Pros:**
 
 - Zero internal allocation overhead.
-- User has full ownership over scratchpad lifetime, sharing, and memory
-  placement.
-- User ensures the buffer is valid and stable for SYCL graph capture.
-- User ensures the lifetime for async CPU thread pool runtime.
+- The user gains total control over scratchpad memory including lifetime
+  management and memory properties (alignment, placement, etc.).
 - Matches established patterns (cuDNN workspace, oneDNN primitive user mode
   scratchpad).
 
 **Cons:**
 
 - API change: Requires new public API surface.
-- User burden: User must manage buffer lifetime and concurrency.
-- Requires pre-calculated scratchpad size: In some cases the library cannot
-  determine the scratchpad size at compilation time.
-- Allocator contract: for example, the memory alignment requirement.
+- Memory misalignment: Misaligned memory can cause performance penalty.
+  Currently we pass the alignment parameter to the user through the allocator
+  API and the user need to fulfill this requirement when returning a buffer to
+  the library. With the new API, the user also own the memory alignment property
+  of a scratchpad. Additionally, the library implementations may issue a verbose
+  warning message if the user-provided scratchpad does not satisfy the execpted
+  alignment.
 
 **Backward compatibility:**
 
@@ -308,3 +315,8 @@ clarify this behavior.
 
 It is recommended to implement the proposal B in section 4.2 with a backward
 compatible support to the current API behavior.
+
+Please note that we may consider to deprecate and drop the current pre-call
+managed scratchpad approach and stick to the user-managed scratchpad in the next
+major release where backward compatibility breaking change is allowed. We will
+discuss it with another RFC document.
