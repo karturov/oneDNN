@@ -64,6 +64,19 @@ struct micro_horz_t : public primitive_t {
             return status::success;
         }
 
+        dnnl_data_type_t get_accum_type() const {
+            auto is_float = [](dnnl_data_type_t dt) {
+                return utils::one_of(dt, dnnl_f32, dnnl_f16, dnnl_bf16);
+            };
+            auto src_ty = arg_md(DNNL_ARG_SRC)->data_type;
+            auto wu_ty = arg_md(DNNL_ARG_WEIGHTS_UP)->data_type;
+            auto wg_ty = arg_md(DNNL_ARG_WEIGHTS_GATE)->data_type;
+            if (is_float(wu_ty) != is_float(wg_ty)) return dnnl_data_type_undef;
+            if (is_float(src_ty) || is_float(wu_ty) || is_float(wg_ty))
+                return dnnl_f32;
+            return dnnl_s32;
+        }
+
         status_t set_default_formats() {
             CHECK(check_format(arg_md(DNNL_ARG_SRC), dnnl_notrans));
             CHECK(check_format(arg_md(DNNL_ARG_WEIGHTS_GATE), dnnl_trans));

@@ -28,14 +28,6 @@
 
 typedef ugemm_wgu_c_type s_tile_type;
 
-#ifdef SRC_DT_F16
-#define VEC_TYPE1 half
-#elif defined(SRC_DT_BF16)
-#define VEC_TYPE1 ushort
-#else
-#error "Data type not supported for VEC_TYPE1"
-#endif
-
 #define binary_add(x, y) ((x) + (y))
 #define binary_mul(x, y) ((x) * (y))
 
@@ -62,12 +54,15 @@ typedef ugemm_wgu_c_type s_tile_type;
 #error "Unknown activation function defined"
 #endif
 
+#define WGU_slm_size \
+    (ugemm_wgu_wg_tile_m * ugemm_wgu_wg_tile_n * sizeof(ACCUM_DATA_T))
+
 #define BR ugemm_wgu_c_type_block0
 #define BC ugemm_wgu_c_type_block1
 #define NBR ugemm_wgu_c_type_nblock0
 #define NBC ugemm_wgu_c_type_nblock1
 
-DECLARE_2D_TILE(s_tile_type_dst, VEC_TYPE1, SUBGROUP_SIZE, BR, BC, NBR, NBC)
+DECLARE_2D_TILE(s_tile_type_dst, INTER_DATA_T, SUBGROUP_SIZE, BR, BC, NBR, NBC)
 DECLARE_2D_TILE_COPY_REBLOCK(s_tile_type, SUBGROUP_SIZE, BR, BC, NBR, NBC,
         s_tile_type_dst, SUBGROUP_SIZE, BR, BC, NBR, NBC, CONVERT_DATA_T)
 
@@ -97,9 +92,11 @@ micro_gated_mlp_horz(const __global SRC_DATA_T *src,
         const __global WTS_DOWN_ATTR_ZP_DATA_T *wts_down_zp) {
 
 #if WITH_SLM
-    local char slm[ugemm_wgu_slm_size];
+    local char slm[ugemm_wgu_slm_size + WGU_slm_size];
+    local char *S_WU_slm = slm + ugemm_wgu_slm_size;
 #else
-    local char *slm = NULL;
+    local char slm[WGU_slm_size];
+    local char *S_WU_slm = slm;
 #endif
 
     uint wg_i0 = get_group_id(2) * ugemm_wgu_wg_tile_m; // OC
@@ -110,8 +107,13 @@ micro_gated_mlp_horz(const __global SRC_DATA_T *src,
     uint sg_i_wgu = sg_ij % ugemm_wgu_sg_per_wg_m;
     uint sg_j_wgu = sg_ij / ugemm_wgu_sg_per_wg_m;
 
-    s_tile_type S_WU_tile = ugemm_wgu(AS_WTS_UP_PTR(W_up), W_UP_S1, src, SRC_S0,
-            OC, MB, IC, wg_i0, wg_j0, 0, sg_i_wgu, sg_j_wgu, slm
+    uint sg_i0_wgu = sg_i_wgu * ugemm_wgu_sg_tile_m;
+    uint sg_j0_wgu = sg_j_wgu * ugemm_wgu_sg_tile_n;
+
+    s_tile_type S_tile;
+
+    S_tile = ugemm_wgu(AS_WTS_UP_PTR(W_up), W_UP_S1, src, SRC_S0, OC, MB, IC,
+            wg_i0, wg_j0, 0, sg_i_wgu, sg_j_wgu, slm
 #if WTS_UP_SCALES == QUANTIZE_2D
             ,
             wts_up_scales
@@ -128,12 +130,16 @@ micro_gated_mlp_horz(const __global SRC_DATA_T *src,
 #if WTS_UP_SCALES == QUANTIZE_COMMON
 #define wu_scale_op(x) ((x) * wu_scale)
     float wu_scale = convert_float(*wts_up_scales);
-    tile_elementwise(S_WU_tile, wu_scale_op);
+    tile_elementwise(S_tile, wu_scale_op);
 #endif
 
 #ifndef UGEMM_UP_ONLY
-    s_tile_type S_WG_tile = ugemm_wgu(AS_WTS_GATE_PTR(W_gate), W_GATE_S1, src,
-            SRC_S0, OC, MB, IC, wg_i0, wg_j0, 0, sg_i_wgu, sg_j_wgu, slm
+    tile_store(S_tile, (local ACCUM_DATA_T *)S_WU_slm, OC, MB,
+            ugemm_wgu_wg_tile_m, sg_i0_wgu, sg_j0_wgu);
+    sub_group_barrier(CLK_LOCAL_MEM_FENCE); // no wg communication happens here
+
+    S_tile = ugemm_wgu(AS_WTS_GATE_PTR(W_gate), W_GATE_S1, src, SRC_S0, OC, MB,
+            IC, wg_i0, wg_j0, 0, sg_i_wgu, sg_j_wgu, slm
 #if WTS_GATE_SCALES == QUANTIZE_2D
             ,
             wts_gate_scales
@@ -147,21 +153,26 @@ micro_gated_mlp_horz(const __global SRC_DATA_T *src,
             OC
 #endif
     );
+    s_tile_type S_WU_tile;
+    tile_load(&S_WU_tile, (local ACCUM_DATA_T *)S_WU_slm, OC, MB,
+            ugemm_wgu_wg_tile_m, sg_i0_wgu, sg_j0_wgu);
+
 #if WTS_GATE_SCALES == QUANTIZE_COMMON
 #define wg_scale_op(x) unary_activation((x) * wg_scale)
     float wg_scale = convert_float(*wts_gate_scales);
-    tile_elementwise(S_WG_tile, wg_scale_op);
+    tile_elementwise(S_tile, wg_scale_op);
 #else
-    tile_elementwise(S_WG_tile, unary_activation);
+    tile_elementwise(S_tile, unary_activation);
 #endif
-    tile_binary(S_WU_tile, S_WG_tile, binary_mul);
+    // TODO: Should this barrier be enforced? Theoretically, there are no more
+    //       JIT GEMM calls between the SLM load and the spot where its result
+    //       is used, so there's hope that the OpenCL compiler SWSB-s it right
+    //sub_group_barrier(CLK_LOCAL_MEM_FENCE);
+    tile_binary(S_tile, S_WU_tile, binary_mul);
 #endif // UGEMM_UP_ONLY
 
-    uint sg_i0_wgu = sg_i_wgu * ugemm_wgu_sg_tile_m;
-    uint sg_j0_wgu = sg_j_wgu * ugemm_wgu_sg_tile_n;
-
     s_tile_type_dst S_tile_dst;
-    tile_copy_reblock(S_WU_tile, &S_tile_dst);
+    tile_copy_reblock(S_tile, &S_tile_dst);
     tile_store(S_tile_dst, tmp_reduce_mem, OC, MB, INTER_S0,
             wg_i0 + sg_i0_wgu, wg_j0 + sg_j0_wgu);
 }

@@ -54,7 +54,7 @@ struct gated_mlp_config_t {
 //gated_mlp_config_t xehpg_h32 = {16, 16,  8, 8};
 //gated_mlp_config_t xehpg_h32 = {16, 16, 16, 1};
 //gated_mlp_config_t xehpg_h32 = { 8,  8,  4, 4};
-gated_mlp_config_t xehpg_h32 = {32, 64,  8, 4};
+gated_mlp_config_t xehpg_h32 = {32, 32,  2, 2};
 //gated_mlp_config_t xehpg_h32 = {16, 16, 16, 1}; // big K
 //gated_mlp_config_t xehpg_h32 = {32, 32,  1, 1};
 //gated_mlp_config_t xehpg_h32 = {16, 16, 32, 2};
@@ -170,20 +170,6 @@ status_t micro_horz_t::pd_t::init(impl::engine_t *engine) {
     return status::success;
 }
 
-gemmstone::Type get_ab_type(gemmstone::Type src, gemmstone::Type wei) {
-    using ty = gemmstone::Type;
-    if (src == ty::f32) return ty::f32;
-    if (src == ty::bf16)
-        return (utils::one_of(wei, ty::u4, ty::s4, ty::u8, ty::s8, ty::bf16))
-                ? ty::bf16
-                : ty::invalid;
-    if (src == ty::f16)
-        return (utils::one_of(wei, ty::u4, ty::s4, ty::u8, ty::s8, ty::f16))
-                ? ty::f16
-                : ty::invalid;
-    return ty::invalid;
-}
-
 status_t micro_horz_t::pd_t::init_microkernels(
         impl::engine_t *engine, const memory_desc_t *inter_md) {
     assert(engine->kind() == engine_kind::gpu);
@@ -235,17 +221,18 @@ status_t micro_horz_t::pd_t::init_microkernels(
     if (hw_info.gmdid == 0) return status::unimplemented;
 
     gemmstone::GEMMProblem problem;
-    problem.Ta_ext = gemm::jit::convert_dnnl_to_kernel_type(
-            arg_md(DNNL_ARG_WEIGHTS_GATE)->data_type);
-    problem.Tb_ext = gemm::jit::convert_dnnl_to_kernel_type(
-            arg_md(DNNL_ARG_SRC)->data_type);
-    problem.Ta = problem.Tb = get_ab_type(problem.Tb_ext, problem.Ta_ext);
-    problem.Ts = problem.Tc = problem.Tc_ext = gemmstone::Type::f32;
+    auto a_ty = arg_md(DNNL_ARG_WEIGHTS_GATE)->data_type;
+    auto b_ty = arg_md(DNNL_ARG_SRC)->data_type;
+    problem.Ta = problem.Ta_ext = gemm::jit::convert_dnnl_to_kernel_type(a_ty);
+    problem.Tb = problem.Tb_ext = gemm::jit::convert_dnnl_to_kernel_type(b_ty);
+    problem.Tc = problem.Tc_ext = problem.Ts
+            = gemm::jit::convert_dnnl_to_kernel_type(get_accum_type());
 
     VCONDCHECK(primitive, create, check, gated_mlp,
-            (problem.Ta != gemmstone::Type::invalid)
+            (problem.Tc != gemmstone::Type::invalid)
+                    && (problem.Ta != gemmstone::Type::invalid)
                     && (problem.Tb != gemmstone::Type::invalid),
-            status::unimplemented, "Incompatible A/B types in uGEMM.");
+            status::unimplemented, "Incompatible A/B/C types in uGEMM.");
 
     auto problem_wgu = std::move(problem);
     problem_wgu.A.layout = gemmstone::MatrixLayout::T;
@@ -320,6 +307,15 @@ status_t micro_horz_t::pd_t::init_microkernels(
                 "gemm_gateup microkernel generation failed with message: %s",
                 e.what());
     }
+
+    int gemm_slm = gemm_gate_up_pkg().getSetting("slm_size");
+    int kern_slm = config.unroll_m_gwu * config.wg_m_gwu * config.unroll_n_gwu
+            * config.wg_n_gwu * types::data_type_size(get_accum_type());
+    int slm = compute::device_info_t::max_slm_size(dev_info->gpu_product());
+
+    VCONDCHECK(primitive, create, check, gated_mlp, gemm_slm + kern_slm <= slm,
+            status::unimplemented, "Insufficient SLM size for uGEMM.");
+
     return status::success;
 }
 
@@ -355,6 +351,7 @@ status_t micro_horz_t::init(impl::engine_t *engine) {
     def_offsets(dst_off, kernel_ctx, "DST", ndims);
     kernel_ctx.define_int("NDIMS", ndims);
 
+    def_data_type(kernel_ctx, pd()->get_accum_type(), "ACCUM");
     def_data_type(kernel_ctx, inter_mdw.data_type(), "INTER");
     def_data_type(kernel_ctx, src_mdw.data_type(), "SRC");
     def_data_type(kernel_ctx, W_gate_mdw.data_type(), "WTS_GATE");
