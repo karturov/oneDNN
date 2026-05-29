@@ -522,6 +522,7 @@ Footnotes:
    requires weight scales attribute and `fpmath` mode with `apply_to_int` enabled.
 
 
+@anchor examples
 ## Examples
 
 See @ref dev_guide_examples page for a complete list. MatMul examples are listed in the
