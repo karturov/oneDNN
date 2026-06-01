@@ -49,12 +49,26 @@ public:
     status_t wait() override { return impl()->wait(); }
     status_t barrier() override { return impl()->barrier(); }
 
+    ~stream_t() override {
+        try {
+            if (is_verbose_profiler_enabled() && verbose_profiler_) {
+                verbose_profiler_->wait_for_pending_primitives();
+            }
+        } catch (...) {
+            VWARN(primitive, exec,
+                    "profiler error: failures during verbose profiler cleanup");
+        }
+    }
+
     void before_exec_hook() override;
     void after_exec_hook() override;
 
     status_t reset_profiling() override;
     status_t get_profiling_data(profiling_data_kind_t data_kind,
             int *num_entries, uint64_t *data) const override;
+
+    status_t run_verbose_profiler(
+            const std::string &pd_info, double start_ms) const override;
 
     status_t copy(const impl::memory_storage_t &src,
             const impl::memory_storage_t &dst, size_t size,
