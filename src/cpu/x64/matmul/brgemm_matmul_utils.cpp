@@ -1640,6 +1640,28 @@ status_t init_brgemm_matmul_conf(cpu_isa_t isa, brgemm_matmul_conf_t &bgmmc,
     bgmmc.is_runtime_N = is_runtime_value(bgmmc.N);
     bgmmc.is_runtime_K = is_runtime_value(bgmmc.K);
 
+    if (bgmmc.with_wei_scales && bgmmc.batch > 1) {
+        const int kn_mask = (1 << (bgmmc.ndims - 1)) | (1 << (bgmmc.ndims - 2));
+        const bool has_batch_bits = (wei_scales.get_mask() & ~kn_mask) != 0;
+        if (has_batch_bits) {
+            const dim_t num_k_groups = bgmmc.is_wei_scale_per_k
+                    ? utils::div_up(bgmmc.K, bgmmc.wei_scales_k_gsize)
+                    : 1;
+            bgmmc.wei_scales_batch_stride = num_k_groups * bgmmc.N;
+        }
+    }
+
+    if (has_wei_zp && bgmmc.batch > 1) {
+        const int kn_mask = (1 << (bgmmc.ndims - 1)) | (1 << (bgmmc.ndims - 2));
+        const bool has_batch_bits = (wei_zp.get_mask() & ~kn_mask) != 0;
+        if (has_batch_bits) {
+            const dim_t num_k_groups = bgmmc.is_wei_zp_per_k
+                    ? utils::div_up(bgmmc.K, bgmmc.wei_zp_k_gsize)
+                    : 1;
+            bgmmc.wei_zp_batch_stride = num_k_groups * bgmmc.N;
+        }
+    }
+
     bgmmc.is_gemv = is_gemv_applicable(
             bgmmc, bm_conf_utils, src_md, weights_md, dst_md, attr);
     VCONDCHECK_BG(IMPLICATION(bgmmc.is_gemv, isa == avx2),
