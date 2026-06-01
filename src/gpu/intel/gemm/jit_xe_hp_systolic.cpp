@@ -318,7 +318,7 @@ bool xe_hp_systolic_t::pd_t::use_nocopy_xehpg(
 
 status_t xe_hp_systolic_t::pd_t::set_default_formats(data_type_t dt) {
     using namespace format_tag;
-    using new_kd_t = jit::gen_xe_systolic_kernel_desc_t;
+    using new_kd_t = jit::gen_xe_systolic_desc_t;
 
     auto sz = types::data_type_size(dt);
     const auto &d = desc();
@@ -564,7 +564,7 @@ status_t xe_hp_systolic_t::init(impl::engine_t *engine) {
 }
 
 status_t xe_hp_systolic_t::init_compute(impl::engine_t *engine) {
-    using kd_t = jit::gen_xe_systolic_kernel_desc_t;
+    using kd_t = jit::gen_xe_systolic_desc_t;
     using namespace gemmstone;
 
     auto *intel_engine = utils::downcast<intel::engine_t *>(engine);
