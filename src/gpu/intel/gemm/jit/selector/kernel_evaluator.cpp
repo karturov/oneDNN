@@ -20,6 +20,7 @@
 #include "gemmstone/problem.hpp"
 #include "internal/utils.hpp"
 
+#include "gpu/intel/compute/zero_pool.hpp"
 #include "gpu/intel/utils.hpp"
 
 #include <algorithm>
@@ -355,7 +356,9 @@ double evaluateECore(const kcatalog::Entry &e, const DerivedEvaluateParams &dp, 
 
     double time = ctime + std::max(mtime, etime);
 
-    if (aux.kParallelVariable || aux.kParallel) {
+    // Scratchpad path only.
+    if (!dnnl::impl::gpu::intel::use_zero_pool()
+            && (aux.kParallelVariable || aux.kParallel)) {
         auto minOps = dev_getenv("MIN_OPS", 500000);
         auto minKPerMNB = dev_getenv("MIN_K_PER_MNB", 512);
         double ops = 2.0 * double(m) * double(n) * double(k) * double(batch);

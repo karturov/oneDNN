@@ -511,7 +511,8 @@ struct gen_t : public primitive_t {
                 scratchpad.book(memory_tracking::names::key_gemm_accumulator,
                         temp_c_elems, temp_c_sz, 64, 65536);
             }
-            if (info->fusedBeta() || info->fusedPostOps()) {
+            if (!use_zero_pool()
+                    && (info->fusedBeta() || info->fusedPostOps())) {
                 auto scratchpad = scratchpad_registry().registrar();
                 int zg_cl = 0;
                 if (info->fusedBeta()) zg_cl++;
