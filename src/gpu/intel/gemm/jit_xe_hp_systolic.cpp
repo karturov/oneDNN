@@ -129,24 +129,20 @@ status_t xe_hp_systolic_t::pd_t::init(impl::engine_t *engine) {
                     <= (size_t)std::numeric_limits<int32_t>::max(),
             VERBOSE_SHAPE_RESTRICTION);
 
-    // Populate cfg.problem in one contiguous post-set_default_formats pass,
-    // ordered identity -> attributes -> (validate) -> post-ops. init_attrs is
-    // format-invariant (get_md reads only base_md.dims), so deferring it past
-    // set_default_formats is byte-identical; the only hard pin is
-    // set_default_formats -> seed_problem (lda/ldb/ldc capture the final packed
-    // strides). finalize_problem is the post-swap_fold hardware-derived tail.
-    CHECK(seed_problem(view_));
-    CHECK(init_attrs(view_, engine));
+    // Must run after set_default_formats: seed_problem captures final packed
+    // lda/ldb/ldc.
+    CHECK(seed_problem(config_));
+    CHECK(init_attrs(config_, engine));
 
-    CHECK(scales_ok(view_, engine));
+    CHECK(scales_ok(config_, engine));
 
     if (!attr()->zero_points_.has_default_values()) {
         VDISPATCH_GEMM(!attr()->zero_points_.has_host_scalars(),
                 VERBOSE_UNSUPPORTED_ZP_CFG);
-        CHECK(zp_ok(view_, engine));
+        CHECK(zp_ok(config_, engine));
     }
 
-    CHECK(init_post_ops(view_, engine));
+    CHECK(init_post_ops(config_, engine));
 
     if (dt_int_ok) {
         VDISPATCH_GEMM(IMPLICATION(a_zp_, !packed_b())
@@ -170,12 +166,12 @@ status_t xe_hp_systolic_t::pd_t::init(impl::engine_t *engine) {
         }
     }
 
-    // Systolic never swaps A/B, so view_ stays in (kernel == user) orientation.
-    bool swap = decide_swap_ab(view_);
+    // Systolic never swaps A/B.
+    bool swap = decide_swap_ab(config_);
     VDISPATCH_GEMM(!swap, VERBOSE_UNSUPPORTED_FEATURE, "swap_ab");
-    jit::swap_fold(view_, swap);
+    jit::swap_fold(config_, swap);
 
-    CHECK(finalize_problem(view_, intel_engine));
+    CHECK(finalize_problem(config_, intel_engine));
 
     init_scratchpad();
 
@@ -577,10 +573,9 @@ status_t xe_hp_systolic_t::init_compute(impl::engine_t *engine) {
     const auto d = pd()->desc();
     auto a_type = d->a_type();
 
-    gpu_assert(pd()->view().finalized_)
+    gpu_assert(pd()->config().finalized_)
             << "init_compute reads an unfinalized problem";
-    problem_ = pd()->view().problem;
-    const GEMMProblem &base = problem_;
+    const GEMMProblem &base = pd()->config().problem;
 
     bool may_k_block
             = (d->k() > kd_t::min_block_k(a_type)) && pd()->allow_k_blocking();
@@ -864,8 +859,9 @@ status_t xe_hp_systolic_t::launch_compute(const exec_ctx_t &ctx, int32_t m,
         arg_list.set(argn++, *po_srcs[i]);
         arg_list.set(argn++, offset_po_src[i]);
 
-        if (problem_.postOps.binaryRow[i] && problem_.postOps.binaryCol[i])
-            arg_list.set(argn++, int32_t(pd()->view().ld_binary(i)));
+        const auto &problem = pd()->config().problem;
+        if (problem.postOps.binaryRow[i] && problem.postOps.binaryCol[i])
+            arg_list.set(argn++, int32_t(pd()->config().ld_binary(i)));
     }
 
     if (pd()->with_batch()) {
@@ -878,11 +874,11 @@ status_t xe_hp_systolic_t::launch_compute(const exec_ctx_t &ctx, int32_t m,
             arg_list.set(argn++, stride_c);
         }
         for (int i = 0; i < po_count; i++) {
-            if (problem_.postOps.binaryBatch[i]) {
+            if (pd()->config().problem.postOps.binaryBatch[i]) {
                 for (int b = 0; b < pd()->batch_dims(); b++) {
                     auto top = pd()->batch_dims() - b - 1;
                     arg_list.set(argn++,
-                            int32_t(pd()->view().stride_binary(i, top)));
+                            int32_t(pd()->config().stride_binary(i, top)));
                 }
             }
         }
@@ -972,13 +968,13 @@ status_t xe_hp_systolic_t::execute(const exec_ctx_t &ctx) const {
 
     const memory_storage_t *po_srcs[GEMM_MAX_PO];
 
-    const auto &view = pd()->view();
-    gpu_assert(view.finalized_) << "execute reads an unfinalized problem";
-    int po_count = int(view.binary_srcs.size());
+    const auto &config = pd()->config();
+    gpu_assert(config.finalized_) << "execute reads an unfinalized problem";
+    int po_count = int(config.binary_srcs.size());
     assert(po_count <= GEMM_MAX_PO);
 
     for (int i = 0; i < po_count; i++) {
-        auto &src = view.binary_srcs[i];
+        auto &src = config.binary_srcs[i];
         switch (src.type) {
             case jit::binary_src_t::binary:
                 po_srcs[i]
@@ -1020,18 +1016,15 @@ status_t xe_hp_systolic_t::execute(const exec_ctx_t &ctx) const {
         }
     }
 
-    size_t off_a0
-            = a.offset() / types::data_type_size(a_type) + pd()->dyn_offset_a;
-    size_t off_b0
-            = b.offset() / types::data_type_size(b_type) + pd()->dyn_offset_b;
-    size_t off_c0
-            = c.offset() / types::data_type_size(c_type) + pd()->dyn_offset_c;
+    size_t off_a0 = a.offset() / types::data_type_size(a_type);
+    size_t off_b0 = b.offset() / types::data_type_size(b_type);
+    size_t off_c0 = c.offset() / types::data_type_size(c_type);
     int64_t off_co0 = 0;
 
     int64_t po_offsets0[GEMM_MAX_PO] = {0}, po_offsets[GEMM_MAX_PO] = {0};
     for (int i = 0; i < po_count; i++)
         if (po_srcs[i])
-            po_offsets0[i] = po_srcs[i]->offset() / problem_.Tbinary[i];
+            po_offsets0[i] = po_srcs[i]->offset() / config.problem.Tbinary[i];
 
     if (pd()->with_ab_zero_points()) {
         ao = &GEMM_CTX_ARG_STORAGE(a_zero_point);
@@ -1091,7 +1084,7 @@ status_t xe_hp_systolic_t::execute(const exec_ctx_t &ctx) const {
                     case 'R': off_co += Bm; break;
                     case 'C': off_co += Bn; break;
                     case 'M':
-                        off_co += isColMajor(problem_.CO.layout)
+                        off_co += isColMajor(config.problem.CO.layout)
                                 ? (Bn * ldco + Bm)
                                 : (Bm * ldco + Bn);
                         break;
@@ -1100,11 +1093,12 @@ status_t xe_hp_systolic_t::execute(const exec_ctx_t &ctx) const {
 
                 for (int i = 0; i < po_count; i++) {
                     po_offsets[i] = po_offsets0[i];
-                    bool row = problem_.postOps.binaryRow[i],
-                         col = problem_.postOps.binaryCol[i];
+                    bool row = config.problem.postOps.binaryRow[i],
+                         col = config.problem.postOps.binaryCol[i];
                     if (row && col) {
-                        auto ld = view.ld_binary(i);
-                        po_offsets[i] += isColMajor(problem_.binary[i].layout)
+                        auto ld = config.ld_binary(i);
+                        po_offsets[i]
+                                += isColMajor(config.problem.binary[i].layout)
                                 ? (Bn * ld + Bm)
                                 : (Bm * ld + Bn);
                     } else if (row)

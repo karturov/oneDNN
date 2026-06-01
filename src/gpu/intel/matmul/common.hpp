@@ -14,24 +14,23 @@
 * limitations under the License.
 *******************************************************************************/
 
-#include "gpu/intel/gemm/config.hpp"
-#include "gpu/intel/primitive_conf.hpp"
+#ifndef GPU_INTEL_MATMUL_COMMON_HPP
+#define GPU_INTEL_MATMUL_COMMON_HPP
+
+#include "gpu/gpu_matmul_pd.hpp"
 
 namespace dnnl {
 namespace impl {
 namespace gpu {
 namespace intel {
-namespace gemm {
+namespace matmul {
 
-int append_post_ops_to_arg_list(const exec_args_t &args,
-        compute::kernel_arg_list_t &arg_list, int post_op_idx,
-        const post_ops_t &post_ops, memory_desc_wrapper dst_mdw) {
-    return intel::append_post_ops_to_arg_list_base(
-            args, arg_list, post_op_idx, post_ops, dst_mdw);
-}
+using pd_t = gpu_matmul_pd_t;
 
-} // namespace gemm
+} // namespace matmul
 } // namespace intel
 } // namespace gpu
 } // namespace impl
 } // namespace dnnl
+
+#endif

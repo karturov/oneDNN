@@ -45,7 +45,7 @@ struct gen_t : public primitive_t {
 
         DECLARE_COMMON_PD_T("jit:gemm:any", gen_t);
 
-        bool decide_swap_ab(const jit::init_view_t &cfg) const override {
+        bool decide_swap_ab(const jit::kernel_config_t &cfg) const override {
             const auto d = desc();
             bool check_lda = ((d->transa() == dnnl_notrans && d->lda() == 1)
                     || (d->transa() == dnnl_trans));
@@ -55,7 +55,7 @@ struct gen_t : public primitive_t {
             // swapped data type/alignment requirements. Currently mostly
             // affects weights-only compression cases, since A/B have
             // different data types.
-            s &= !wei_decomp();
+            s &= !cfg.wei_decomp;
             return s;
         }
 
@@ -75,13 +75,10 @@ struct gen_t : public primitive_t {
             dev_info_ = intel_engine->device_info();
             arch_ = dev_info_->gpu_arch();
 
-            // Populate cfg.problem in one contiguous post-set_default_formats
-            // pass, ordered identity -> attributes -> (validate) -> post-ops:
-            // seed_problem here, the rest inside jit::pd_t::init. The only hard
-            // pin is set_default_formats -> seed_problem, so lda/ldb/ldc capture
-            // the final packed strides. finalize_problem is the post-swap_fold
-            // hardware-derived tail.
-            CHECK(seed_problem(view_));
+            // Must run after set_default_formats so lda/ldb/ldc capture the
+            // final packed strides; the rest of cfg.problem is filled in
+            // jit::pd_t::init.
+            CHECK(seed_problem(config_));
 
             CHECK(jit::pd_t::init(engine, arch_));
 
@@ -101,21 +98,21 @@ struct gen_t : public primitive_t {
                             d->lda(), d->ldb(), d->ldc(), d->batch()),
                     VERBOSE_UNSUPPORTED_TAG);
 
-            // Phase B — after swap_fold, view_ is the kernel projection.
-            bool swap = decide_swap_ab(view_);
+            // After swap_fold, config_ is the kernel-frame projection.
+            bool swap = decide_swap_ab(config_);
             // No kernels with transposed C, if swap_ab is disabled (e.g.
             // due to wei_decomp()) - this case cannot be handled.
             VDISPATCH_GEMM(IMPLICATION(d->transc() == dnnl_trans, swap),
                     VERBOSE_UNSUPPORTED_TAG);
-            jit::pad_lda(view_, swap);
-            jit::swap_fold(view_, swap);
+            jit::pad_lda(config_, swap);
+            jit::swap_fold(config_, swap);
 
-            const auto &cfg = view_;
+            const auto &cfg = config_;
 
             if (utils::one_of(cfg.c_type(), s32, f16, bf16, f32, u8, s8)
                     && utils::one_of(cfg.a_type(), u8, s8, u4, s4)) {
                 VDISPATCH_GEMM(
-                        (utils::one_of(cfg.b_type(), u8, s8) || wei_decomp()),
+                        (utils::one_of(cfg.b_type(), u8, s8) || cfg.wei_decomp),
                         VERBOSE_UNSUPPORTED_DT);
 
                 VDISPATCH_GEMM(IMPLICATION(utils::one_of(cfg.c_type(), f32, s8,
@@ -130,7 +127,7 @@ struct gen_t : public primitive_t {
                         VERBOSE_INCONSISTENT_DT, "a", "c");
                 VDISPATCH_GEMM(utils::one_of(d->acc_type, cfg.a_type(), f32),
                         VERBOSE_INCONSISTENT_DT, "a", "acc");
-            } else if (!wei_decomp()) {
+            } else if (!cfg.wei_decomp) {
                 VDISPATCH_GEMM(utils::one_of(cfg.a_type(), f64, f32, f16, bf16,
                                        f8_e5m2, f8_e4m3, f4_e2m1, f4_e3m0),
                         VERBOSE_UNSUPPORTED_DT);
@@ -170,7 +167,7 @@ struct gen_t : public primitive_t {
                             (cfg.c_type() != f64 || d->bias_type() == f64)),
                     VERBOSE_UNSUPPORTED_BIAS_CFG);
             VDISPATCH_GEMM(
-                    IMPLICATION(with_sum_ab(),
+                    IMPLICATION(cfg.with_sum_ab(),
                             !with_bias_orig
                                     && (attr()->zero_points_.has_default_values(
                                             DNNL_ARG_DST))),
@@ -215,7 +212,7 @@ struct gen_t : public primitive_t {
                     VERBOSE_UNSUPPORTED_FEATURE, "grouped scales");
 
             // Size checks for fused reduction kernels.
-            if (with_sum_ab()) {
+            if (cfg.with_sum_ab()) {
                 auto mnk = cfg.m * cfg.n * cfg.k;
                 if (arch_ == arch_t::xe_hpc && cfg.a_type() == f32)
                     VDISPATCH_GEMM(
@@ -238,7 +235,9 @@ struct gen_t : public primitive_t {
             if (attr()->acc_mode_ == accumulation_mode::relaxed)
                 set_mode(mode, kernel_desc_t::mode_relaxed_acc);
 
-            if (wei_decomp()) { set_mode(mode, kernel_desc_t::mode_w_decomp); }
+            if (cfg.wei_decomp) {
+                set_mode(mode, kernel_desc_t::mode_w_decomp);
+            }
 
             // GEMM kernels down convert the following parameters to
             // int/uint32_t
@@ -249,7 +248,7 @@ struct gen_t : public primitive_t {
                             <= std::numeric_limits<uint32_t>::max(),
                     VERBOSE_SHAPE_RESTRICTION);
 
-            CHECK(finalize_problem(view_, intel_engine));
+            CHECK(finalize_problem(config_, intel_engine));
 
             VDISPATCH_GEMM(IMPLICATION(cfg.problem.Tc == gemmstone::Type::f64,
                                    !with_eltwise && !with_binary),
@@ -282,7 +281,7 @@ struct gen_t : public primitive_t {
                 if (kernel_desc_.driver_info()->kParallel()
                         && !kernel_desc_.driver_info()->fusedPostOps()) {
                     bool po_valid = !cfg.non_scale_po
-                            && !(with_sum() && with_c_scales())
+                            && !(cfg.with_sum && with_c_scales())
                             && utils::one_of(cfg.c_type(), f32, s32);
                     if (!po_valid && print_verbose)
                         dnnl::impl::verbose_printf(
@@ -293,7 +292,7 @@ struct gen_t : public primitive_t {
                 // Limited post-op support for low-precision accumulation.
                 if (kernel_desc_.problem()->Tc.size() < 4) {
                     bool need_x32_acc = with_binary
-                            || !IMPLICATION(with_sum(), sum_at_begin());
+                            || !IMPLICATION(cfg.with_sum, cfg.sum_at_begin);
                     valid &= !need_x32_acc;
                     if (need_x32_acc && print_verbose)
                         dnnl::impl::verbose_printf(
@@ -351,6 +350,10 @@ struct gen_t : public primitive_t {
 
             VDISPATCH_GEMM(
                     kernel_success, "matching kernel not found in catalog");
+
+            // Adopt the selected entry's finalized problem as canonical.
+            // config_ is not serialized, so the cache key is unaffected.
+            config_.problem = *kernel_desc_.problem();
 
             init_scratchpad();
 
@@ -499,7 +502,7 @@ struct gen_t : public primitive_t {
                 int temp_c_sz = nstl::max(
                         (int)types::data_type_size(desc()->c_type()), 4);
                 int temp_c_elems = info->wgTile(LoopM) * info->wgTile(LoopN);
-                if (with_sum_ab())
+                if (config_.with_sum_ab())
                     temp_c_elems += nstl::max(
                             info->wgTile(LoopM), info->wgTile(LoopN));
                 temp_c_elems = utils::rnd_up(temp_c_elems, 64);
@@ -524,11 +527,6 @@ struct gen_t : public primitive_t {
 
             return groups;
         }
-
-        size_t dyn_offset_a = 0;
-        size_t dyn_offset_b = 0;
-        size_t dyn_offset_c = 0;
-        size_t dyn_offset_co = 0;
 
         const compute::device_info_t *dev_info_ = nullptr;
         compute::gpu_arch_t arch_ = compute::gpu_arch_t::unknown;
@@ -579,7 +577,7 @@ struct gen_t : public primitive_t {
 
 private:
     status_t launch_nocopy(const exec_ctx_t &ctx, intel::stream_t *s,
-            zero_pool_t *zero_pool, const jit::exec_view_t &exec_cfg,
+            zero_pool_t *zero_pool, const jit::exec_config_t &exec_cfg,
             const memory_storage_t *c_temp, int po_count,
             const memory_storage_t **po_src, int64_t offset_a, int64_t offset_b,
             int64_t offset_c, int64_t offset_aq, int64_t offset_bq,

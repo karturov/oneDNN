@@ -44,16 +44,12 @@ struct xe_hp_systolic_t : public gemm::primitive_t {
         bool use_nocopy_xehpg(data_type_t dt, unsigned ld_align);
         status_t set_default_formats(data_type_t dt);
 
-        size_t dyn_offset_a = 0;
-        size_t dyn_offset_b = 0;
-        size_t dyn_offset_c = 0;
-
         float alpha() const { return 1.0f; }
-        float beta() const { return view().beta; }
+        float beta() const { return config().beta; }
 
-        bool with_bias() const { return view().with_bias; }
+        bool with_bias() const { return config().with_bias; }
 
-        int bias_cmask() const { return view().bias_cmask; }
+        int bias_cmask() const { return config().bias_cmask; }
 
         bool packed_a() const { return packed_a_; }
         bool packed_b() const { return packed_b_; }
@@ -113,7 +109,7 @@ struct xe_hp_systolic_t : public gemm::primitive_t {
         bool with_c_zero_points() const { return c_zp_; }
 
         bool allow_k_blocking() const {
-            const auto &po = view().problem.postOps;
+            const auto &po = config().problem.postOps;
             return (desc()->acc_type == desc()->c_type())
                     && IMPLICATION(po.len() > 0, po[0].is_sum());
         }
@@ -188,8 +184,6 @@ private:
 
     char co_kind_ = 'N';
     bool walk_n_first_ = false;
-
-    gemmstone::GEMMProblem problem_;
 
     const pd_t *pd() const { return (const pd_t *)primitive_t::pd().get(); }
 };
