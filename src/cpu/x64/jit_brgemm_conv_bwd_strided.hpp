@@ -204,8 +204,8 @@ private:
             int batch_size, char *ptr_C, char *ptr_D, const char *bias_w,
             int g_ic, bool do_postops, const void *binary_post_ops_rhs,
             int32_t src_zp_val, int32_t *src_zp_ptr, const int32_t *dst_zp_ptr,
-            int32_t *s8s8_comp, bool do_only_comp,
-            bool is_first_call_postops) const;
+            int32_t *s8s8_comp, bool do_only_comp, bool is_first_call_postops,
+            const char *dst_orig_override = nullptr) const;
 
     void maybe_trans_inp(int ithr, const char *__restrict input,
             char *__restrict inp_buffer, uint8_t *__restrict inp_buffer_mask,

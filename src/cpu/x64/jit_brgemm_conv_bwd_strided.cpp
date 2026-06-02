@@ -263,12 +263,13 @@ status_t brgemm_convolution_bwd_strided_t<isa>::pd_t::add_brg_descriptor(
 
     brgemm_attr_t brgattr;
     brgattr.use_uker = jcp_.use_uker;
-    brgattr.use_interleave_stores = jcp_.use_interleave_stores;
+    brgattr.use_interleave_stores = false;
     brgattr.hint_prefetching = jcp_.hint_prefetching;
     brgattr.max_bs = jcp_.max_batch;
+    brgattr.var_bs = jcp_.use_uker;
     brgattr.hint_innermost_loop = jcp_.brgemm_bd_loop_innermost
             ? brgemm_bd_loop_innermost
-            : brgemm_ld_loop_innermost;
+            : brgemm_innermost_undef;
     if (jcp_.amx_tile_load_xx) {
         // assuming 2x2 decomposition in amx brgemm kernel
         // and overlap of input by kw
@@ -1080,7 +1081,8 @@ void brgemm_convolution_bwd_strided_t<isa>::call_brgemm_kernel(
         char *ptr_D, const char *bias_w, int g_ic, bool do_postops,
         const void *binary_post_ops_rhs, int32_t src_zp_val,
         int32_t *src_zp_ptr, const int32_t *dst_zp_ptr, int32_t *s8s8_comp,
-        bool do_only_comp, bool is_first_call_postops) const {
+        bool do_only_comp, bool is_first_call_postops,
+        const char *dst_orig_override) const {
 
     const auto _pd = pd();
     const auto &jcp = _pd->jcp_;
@@ -1098,9 +1100,11 @@ void brgemm_convolution_bwd_strided_t<isa>::call_brgemm_kernel(
     const auto maybe_do_postops = one_of(
             true, do_postops, do_only_comp, do_only_pass_comp, do_skip_accm);
     if (maybe_do_postops) {
+        const auto dst_orig = dst_orig_override ? dst_orig_override
+                                                : btc.brgemm_ctx.diff_src;
         const brgemm_post_ops_data_t post_ops_data {
                 static_cast<const char *>(bias_w), binary_post_ops_rhs,
-                static_cast<size_t>(g_ic), 0, btc.brgemm_ctx.diff_src, 0,
+                static_cast<size_t>(g_ic), 0, dst_orig, 0,
                 static_cast<void *>(src_zp_ptr), nullptr, dst_zp_ptr,
                 do_skip_accm, src_zp_val, do_only_comp, do_only_pass_comp,
                 btc.src_scales,
@@ -1581,10 +1585,39 @@ void brgemm_convolution_bwd_strided_t<isa>::ker_trans(
             }
             k_sum += k;
         }
+        // For deconvolution with sum post-op and out_buffer: pre-copy
+        // existing output values into out_buffer so sum reads correct data.
+        if (do_postops && need_out_buffer && jcp.is_deconv && jcp.with_sum) {
+            const auto iw_begin
+                    = static_cast<dim_t>(btc.iwb) * jcp.iw_block + btc.sw;
+            const auto real_dst = diff_src
+                    + dst_dsz
+                            * (btc.n * dst_d_sz + g_ic + id * dst_h_sz
+                                    + ih * dst_w_sz
+                                    + iw_begin * jcp.ic_without_padding);
+            const int ic_len = is_ic_tail ? (jcp.ic - ic) : jcp.ic_block;
+            const auto ic_bytes = static_cast<size_t>(ic_len) * dst_dsz;
+            const auto stride_bytes = static_cast<size_t>(jcp.stride_w)
+                    * jcp.ic_without_padding * dst_dsz;
+            for (int m = 0; m < ker_i; m++) {
+                const auto iw_pos = iw_begin + m * jcp.stride_w;
+                if (iw_pos >= jcp.iw) break;
+                std::memcpy(ptr_D + m * stride_bytes,
+                        real_dst + m * stride_bytes, ic_bytes);
+            }
+        }
         call_brgemm_kernel(btc, brg_idx, k_sum, ptr_C, ptr_D, bias_w, g_ic,
                 do_postops, post_ops_binary_rhs_arg_vec.data(), btc.src_zp_val,
                 src_zp, btc.dst_zp_vals, s8s8_comp, false,
-                is_first_call_postops);
+                is_first_call_postops,
+                need_out_buffer && jcp.is_deconv ? btc.out_buffer
+                                - dst_dsz
+                                        * (btc.n * dst_d_sz + g_ic
+                                                + id * dst_h_sz + ih * dst_w_sz
+                                                + static_cast<dim_t>(btc.iwb)
+                                                        * jcp.iw_block
+                                                        * jcp.ic_without_padding)
+                                                 : nullptr);
         if (!is_first_call_postops_state_changed) {
             const auto do_only_pass_comp = !do_postops && jcp.src_zero_point
                     && (jcp.req_brg_comp_pad || jcp.max_vpad > 0);

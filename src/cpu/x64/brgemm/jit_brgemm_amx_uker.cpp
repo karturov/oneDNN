@@ -2493,6 +2493,9 @@ void jit_brgemm_amx_uker_base_t::bs_loop(brgemm_iteration_t &bi) {
             Label BS_loop_label, end_BS_loop_label, first_BS_loop_label,
                     last_BS_loop_label;
 
+            // Reload reg_BS from params since rbx may have been clobbered
+            // by do_post_ops/skip_accm checks when are_post_ops_applicable_
+            mov(reg_BS, ptr[param1 + GET_OFF(BS)]);
             mov(reg_BS_loop, reg_BS);
             cmp(reg_BS_loop, 0);
             jz(end_BS_loop_label, T_NEAR);
@@ -2538,6 +2541,9 @@ void jit_brgemm_amx_uker_base_t::bs_loop(brgemm_iteration_t &bi) {
 
             L_aligned(end_BS_loop_label, 64);
         }
+        // Restore rbp after var_bs loop where reg_aux1_batch clobbered it.
+        // EVEX_compress_addr relies on rbp == 2 * EVEX_max_8b_offt.
+        if (may_use_rbp()) mov(reg_EVEX_max_8b_offt, 2 * EVEX_max_8b_offt);
         store_accumulators(bi);
     } else {
         if (brg.alpha != 0.f) {
