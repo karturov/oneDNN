@@ -42,6 +42,8 @@ status_t check_post_op_chain(const primitive_attr_t &attr,
         const memory_desc_wrapper &dst_desc, po_kind_t *po_chain,
         data_type_t *scale_arr) {
     auto &po = attr.post_ops_;
+    scale_arr[0] = data_type::undef;
+    scale_arr[1] = data_type::undef;
     VCHECK_MATMUL(po.len() <= 3, VERBOSE_UNSUPPORTED_POSTOP);
     for (int i = 0; i < po.len(); ++i) {
         auto &e = po.entry_[i];
@@ -81,9 +83,18 @@ status_t check_post_op_chain(const primitive_attr_t &attr,
     }
 
     set_binary_scales_dt(attr, po_chain, scale_arr);
-    for (int i = 0; i < 2; ++i) {
-        VCHECK_MATMUL(scale_arr[i] == data_type::undef
-                        || utils::one_of(scale_arr[i], data_type::f16,
+    const bool has_grouped_scale
+            = find_po_in_chain(po_chain, po_kind_t::binary_grouped_scale) != -1;
+    const bool has_dense_scale
+            = find_po_in_chain(po_chain, po_kind_t::binary_dense_scale) != -1;
+
+    if (has_grouped_scale) {
+        VCHECK_MATMUL(utils::one_of(scale_arr[0], data_type::f16,
+                                data_type::bf16, data_type::f32),
+                VERBOSE_UNSUPPORTED_POSTOP);
+    }
+    if (has_dense_scale) {
+        VCHECK_MATMUL(utils::one_of(scale_arr[1], data_type::f16,
                                 data_type::bf16, data_type::f32),
                 VERBOSE_UNSUPPORTED_POSTOP);
     }
@@ -139,7 +150,7 @@ std::string generate_post_ops_microgemm_header(
                       "lddst;\n";
                 os << "    ugemm_grouped_c_type binary_group_tile_" << i
                    << ";\n";
-                os << "#if defined(BINARY_SCALE_GROUPED_DT_F32)\n";
+                     os << "#if BINARY_SCALE_GROUPED_DT_F32\n";
                 os << "    tile_load(&binary_group_tile_" << i
                    << ", group_scale_ptr, n, m, lddst, sg_i0, sg_j0);\n";
                 os << "#else\n";
@@ -159,9 +170,9 @@ std::string generate_post_ops_microgemm_header(
                 os << "    const global BINARY_SCALE_DENSE_TILE_DATA_T "
                       "*dense_scale_ptr_"
                    << i << " = dense_scale + src_offset;\n";
-                os << "    ugemm_grouped_c_type dense_scale_tile_" << i
+                os << "    binary_dense_tile_type dense_scale_tile_" << i
                    << ";\n";
-                os << "#if defined(BINARY_SCALE_DENSE_DT_F32)\n";
+                os << "#if BINARY_SCALE_DENSE_DT_F32\n";
                 os << "    tile_load(&dense_scale_tile_" << i
                    << ", dense_scale_ptr_" << i << ", m, 1, 0, sg_j0, 0);\n";
                 os << "#else\n";
