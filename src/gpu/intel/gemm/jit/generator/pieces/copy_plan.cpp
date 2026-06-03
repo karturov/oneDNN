@@ -3261,7 +3261,8 @@ void CopyPlan::optimizeConcatenate(bool initial)
 
             int simd = std::max(simd1 + i2.simd, i1.simd);
             if (!initial) {
-                doJoin &= (simd <= 32);
+                auto simdMax = hw > ngen::HW::XeHPG ? 32 : 16;
+                doJoin &= (simd <= simdMax);
                 doJoin &= (simd * getBytes(i1.dst.type) <= 2 * GRF::bytes(hw));
             }
 
