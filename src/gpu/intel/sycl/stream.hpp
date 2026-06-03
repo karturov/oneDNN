@@ -76,6 +76,9 @@ struct stream_t : public gpu::intel::stream_t {
         return profiler_->get_info(data_kind, num_entries, data);
     }
 
+    status_t run_verbose_profiler(
+            const std::string &pd_info, double start_ms) const override;
+
     ::sycl::queue &queue() const { return *impl()->queue(); }
 
     status_t enqueue_primitive(const primitive_iface_t *prim_iface,
@@ -96,6 +99,25 @@ struct stream_t : public gpu::intel::stream_t {
     }
 
     status_t barrier() override { return impl()->barrier(); }
+
+    ~stream_t() override {
+        // for non-blocked verbose profiling, waiting for all primitves to
+        // complete ensures that all enqueued primitives are logged before
+        // stream destruction
+        try {
+            if (is_verbose_profiler_enabled()) {
+                verbose_profiler().wait_for_pending_primitives();
+            }
+        } catch (const ::sycl::exception &e) {
+            VWARN(primitive, exec,
+                    "profiler error: sycl error during verbose profiler "
+                    "cleanup: %s",
+                    e.what());
+        } catch (...) {
+            VWARN(primitive, exec,
+                    "profiler error: failures during verbose profiler cleanup");
+        }
+    }
 
     const xpu::sycl::context_t &sycl_ctx() const { return impl()->sycl_ctx(); }
     xpu::sycl::context_t &sycl_ctx() { return impl()->sycl_ctx(); }
