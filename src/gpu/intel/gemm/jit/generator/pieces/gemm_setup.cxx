@@ -1283,7 +1283,7 @@ bool Generator<hw>::gemmAccumulateCSetup(GEMMProblem &problem, GEMMStrategy &str
 
             // ... layout out to SLM...
             remM_A = remK_A = false;
-            CREATE_LAYOUT(state.Ao_layout, Ta, state.ma_slm, state.ka_slm, state.Ao, state.Ao_strategy, remM_A, remK_A, true);
+            CREATE_LAYOUT(state.Ao_layout, Ta, state.ma_slm, state.ka_slm, state.Ao, state.Ao_strategy, remM_A, remK_A, true, AvoidFragment, 0, opCount, false);
 
             // ... and layout back from SLM.
             problem.A = state.Ao;

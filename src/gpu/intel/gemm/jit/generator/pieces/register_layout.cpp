@@ -1169,9 +1169,9 @@ RegisterLayout::RegisterLayout(HW hw_, Type T_, int r, int c, const MatrixAddres
     if (astrategy.tileR > 0) forceTiling(maxRBlock, astrategy.tileR);
     if (astrategy.tileC > 0) forceTiling(maxCBlock, astrategy.tileC);
 
-    bool colMajor = !isLargeCrosspack(T, atype.crosspack);
-    if (atype.layout == MatrixLayout::Pc) forceTiling(colMajor ? maxCBlock : maxRBlock, atype.packSize);
-    if (atype.layout == MatrixLayout::Pr) forceTiling(colMajor ? maxRBlock : maxCBlock, atype.packSize);
+    bool colMajor = isColMajor(atype.layout); //!isLargeCrosspack(T, atype.crosspack);
+    if (atype.layout == MatrixLayout::Pc) forceTiling(maxRBlock, atype.packSize);
+    if (atype.layout == MatrixLayout::Pr) forceTiling(maxCBlock, atype.packSize);
 
     // Two separate strategies for creating register layout:
     //    - standard 2D partitioning
