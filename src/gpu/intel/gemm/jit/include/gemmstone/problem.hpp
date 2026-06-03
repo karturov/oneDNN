@@ -295,8 +295,8 @@ struct GEMMProblem : public CommonProblem {
             || (bScale2D() && (bqGroupK <=1 || bqGroupK % 32 == 0)));
     }
 
-    bool needsAGroupSums() const { return (bOffset == ABOffset::Calc && quantized2DB() && !earlyDequantizableOffset(Tb_ext, Tbo, Tb)); }
-    bool needsBGroupSums() const { return (aOffset == ABOffset::Calc && quantized2DA() && !earlyDequantizableOffset(Ta_ext, Tao, Ta)); }
+    bool needsAGroupSums() const { return forceGroupSumsA; } //(bOffset == ABOffset::Calc && quantized2DB() && !earlyDequantizableOffset(Tb_ext, Tbo, Tb)); }
+    bool needsBGroupSums() const { return forceGroupSumsB; } //(aOffset == ABOffset::Calc && quantized2DA() && !earlyDequantizableOffset(Ta_ext, Tao, Ta)); }
 
     bool usesCOPtr() const { return (hasCOffsetPtr() && cOffset != COffset::None) || sumA || sumB; }
     bool allowMatrixOffset() const { return (cOffset == COffset::Pre); }
