@@ -28,10 +28,20 @@ else()
     add_definitions(-DCL_TARGET_OPENCL_VERSION=120)
 endif()
 
-if(OpenCL_INCLUDE_DIR)
-    message(STATUS "Using user provided OpenCL headers from '${OpenCL_INCLUDE_DIR}'")
-    file(TO_CMAKE_PATH ${OpenCL_INCLUDE_DIR} CUSTOM_OCL_HEADERS_PATH)
-    include_directories_with_host_compiler(${CUSTOM_OCL_HEADERS_PATH})
-else()
-    include_directories_with_host_compiler(${PROJECT_SOURCE_DIR}/third_party/opencl)
+if(NOT EXISTS "${DNNL_OCL_INCLUDE_DIR}/CL/cl.h")
+    message(FATAL_ERROR
+        "OpenCL headers not found at '${DNNL_OCL_INCLUDE_DIR}'. "
+        "Set DNNL_OCL_INCLUDE_DIR to a directory containing 'CL/cl.h'.")
+endif()
+
+file(TO_CMAKE_PATH "${DNNL_OCL_INCLUDE_DIR}" DNNL_OCL_INCLUDE_DIR)
+message(STATUS "Found OpenCL headers: ${DNNL_OCL_INCLUDE_DIR}")
+include_directories_with_host_compiler(${DNNL_OCL_INCLUDE_DIR})
+
+# Tests and examples link dynamically against OpenCL ICD loader
+if(DNNL_GPU_RUNTIME STREQUAL "OCL" AND (DNNL_BUILD_TESTS OR DNNL_BUILD_EXAMPLES))
+    find_package(OpenCL REQUIRED QUIET)
+    if(OpenCL_FOUND)
+        message(STATUS "Found OpenCL ICD: ${OpenCL_LIBRARY} (found version \"${OpenCL_VERSION_STRING}\")")
+    endif()
 endif()
